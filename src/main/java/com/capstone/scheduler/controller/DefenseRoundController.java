@@ -1,0 +1,136 @@
+package com.capstone.scheduler.controller;
+
+import com.capstone.scheduler.dto.request.DefenseRoundRequest;
+import com.capstone.scheduler.dto.response.DefenseRoundResponse;
+import com.capstone.scheduler.service.DefenseRoundService;
+import io.swagger.v3.oas.annotations.Operation;
+import io.swagger.v3.oas.annotations.Parameter;
+import io.swagger.v3.oas.annotations.responses.ApiResponse;
+import io.swagger.v3.oas.annotations.responses.ApiResponses;
+import io.swagger.v3.oas.annotations.tags.Tag;
+import jakarta.validation.Valid;
+import lombok.RequiredArgsConstructor;
+import org.springframework.core.io.ByteArrayResource;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.PageRequest;
+import org.springframework.data.domain.Pageable;
+import org.springframework.data.domain.Sort;
+import org.springframework.http.HttpHeaders;
+import org.springframework.http.HttpStatus;
+import org.springframework.http.MediaType;
+import org.springframework.http.ResponseEntity;
+import org.springframework.security.access.prepost.PreAuthorize;
+import org.springframework.web.bind.annotation.*;
+import org.springframework.web.multipart.MultipartFile;
+
+import java.io.IOException;
+
+@RestController
+@RequestMapping("/api/v1/rounds")
+@RequiredArgsConstructor
+@Tag(name = "Defense Round Management", description = "APIs for managing Defense Rounds")
+@PreAuthorize("hasAnyRole('ADMIN', 'LECTURER')")
+public class DefenseRoundController {
+
+    private final DefenseRoundService defenseRoundService;
+
+    // CREATE DEFENSE ROUND
+    @PreAuthorize("hasRole('ADMIN')")
+    @PostMapping("/{semesterId}")
+    @Operation(summary = "Create a new Defense Round",
+            description = "Create a defense round container under a specific semester. " +
+                    "Note: Specific dates will be managed in Defense Days.")
+    @ApiResponses(value = {
+            @ApiResponse(responseCode = "201", description = "Defense Round created successfully"),
+            @ApiResponse(responseCode = "400", description = "Validation Error (Missing Round Name)"),
+            @ApiResponse(responseCode = "404", description = "Semester not found")
+    })
+    public ResponseEntity<DefenseRoundResponse> createRound(
+            @Parameter(description = "ID of the Semester", required = true, example = "1")
+            @PathVariable("semesterId") Integer semesterId,
+
+            @RequestBody @Valid DefenseRoundRequest request
+    ) {
+        DefenseRoundResponse newRound = defenseRoundService.createRound(semesterId, request);
+        return ResponseEntity.status(HttpStatus.CREATED).body(newRound);
+    }
+
+    // GET LIST OF DEFENSE ROUND
+    @GetMapping
+    @Operation(summary = "Get List of Defense Rounds",
+            description = "Retrieve a paginated list of defense rounds. Can be filtered by Semester ID.")
+    @ApiResponses(value = {
+            @ApiResponse(responseCode = "200", description = "Successfully retrieved list"),
+            @ApiResponse(responseCode = "400", description = "Invalid pagination or sort parameters")
+    })
+    public ResponseEntity<Page<DefenseRoundResponse>> getDefenseRounds(
+            @Parameter(description = "Filter by Semester ID (Optional)")
+            @RequestParam(required = false) Integer semesterId,
+
+            @Parameter(description = "Page number (0-based index)")
+            @RequestParam(defaultValue = "0") int page,
+
+            @Parameter(description = "Page size")
+            @RequestParam(defaultValue = "10") int size,
+
+            @Parameter(description = "Sorting criteria (e.g., roundId,desc)")
+            @RequestParam(defaultValue = "roundId,desc") String[] sort
+    ) {
+        // Xử lý Sort
+        String sortField = sort[0];
+        Sort.Direction sortDirection = sort.length > 1 && sort[1].equalsIgnoreCase("asc")
+                ? Sort.Direction.ASC : Sort.Direction.DESC;
+
+        Pageable pageable = PageRequest.of(page, size, Sort.by(sortDirection, sortField));
+
+        Page<DefenseRoundResponse> result = defenseRoundService.getDefenseRounds(semesterId, pageable);
+        return ResponseEntity.ok(result);
+    }
+
+    @PreAuthorize("hasRole('ADMIN')")
+    @PutMapping("/{roundId}/cancel")
+    @Operation(
+            summary = "Cancel a Defense Round",
+            description = "Changes the status of a defense round to CANCELLED. " +
+                    "Note: A round can ONLY be cancelled if its current status is PLANNING."
+    )
+    @ApiResponses(value = {
+            @ApiResponse(responseCode = "200", description = "Round successfully cancelled"),
+            @ApiResponse(responseCode = "400", description = "Cannot cancel round (not in PLANNING status)"),
+            @ApiResponse(responseCode = "404", description = "Round not found")
+    })
+    public ResponseEntity<String> cancelDefenseRound(@PathVariable Integer roundId) {
+        defenseRoundService.cancelDefenseRound(roundId);
+        return ResponseEntity.ok("Defense Round ID " + roundId + " has been successfully cancelled.");
+    }
+
+    @PreAuthorize("hasRole('ADMIN')")
+    @GetMapping("/{roundId}/export-template")
+    @Operation(summary = "Export Defense Results Template",
+            description = "Downloads an Excel file containing all IN_PROGRESS projects for grading. " +
+                    "The file contains Passed and Failed columns with mutual exclusion validation.")
+    public ResponseEntity<ByteArrayResource> exportTemplate(@PathVariable Integer roundId) throws IOException {
+        byte[] data = defenseRoundService.exportResultTemplate(roundId);
+        return ResponseEntity.ok()
+                .header(HttpHeaders.CONTENT_DISPOSITION, "attachment; filename=Defense_Grading_Round_" + roundId + ".xlsx")
+                .contentType(MediaType.parseMediaType("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"))
+                .body(new ByteArrayResource(data));
+    }
+
+    @PreAuthorize("hasRole('ADMIN')")
+    @PostMapping(value = "/{roundId}/import", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
+    @Operation(summary = "Import Defense Results",
+            description = "Upload the graded Excel file. Projects marked as PASSED will be marked as COMPLETED. " +
+                    "Projects marked as FAILED will fail this round but remain PENDING for next rounds.")
+    @ApiResponses(value = {
+            @ApiResponse(responseCode = "200", description = "Import successful with summary counts"),
+            @ApiResponse(responseCode = "400", description = "Invalid file or processing error")
+    })
+    public ResponseEntity<String> importResults(
+            @Parameter(description = "ID of the Defense Round") @PathVariable Integer roundId,
+            @Parameter(description = "Filled Excel grading file") @RequestPart("file") MultipartFile file) {
+
+        String resultSummary = defenseRoundService.importResults(roundId, file);
+        return ResponseEntity.ok(resultSummary);
+    }
+}
